@@ -1,0 +1,16 @@
+# Secrets / local config
+.env
+
+# Runtime logs
+logs/
+*.log
+
+# Dependencies
+node_modules/
+
+# Legacy in-project data folder (real data now lives under PERSIST_DIR,
+# outside the project entirely — see server/store.js and .env.example)
+data/
+
+# OS / editor cruft
+.DS_Store
