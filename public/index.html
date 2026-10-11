@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Prathidhwani · WhatsApp Job Broadcaster</title>
+<link rel="stylesheet" href="/style.css" />
+<link rel="icon" href="/uploads/logo.jpeg" />
+</head>
+<body>
+
+<div class="app">
+    <aside class="sidebar">
+        <div class="brand">
+            <img id="logoImg" class="brand-logo" src="/uploads/logo.jpeg" alt="logo" />
+            <div>
+                <div class="brand-name" id="orgNameLabel">Prathidhwani</div>
+                <div class="brand-tag" id="orgTagLabel">Job Broadcaster</div>
+            </div>
+        </div>
+
+        <nav>
+            <button class="nav-item active" data-tab="connect">📱 Connect</button>
+            <button class="nav-item" data-tab="groups">👥 Groups</button>
+            <button class="nav-item" data-tab="telegram">📣 Telegram</button>
+            <button class="nav-item" data-tab="linkedin">💼 LinkedIn</button>
+            <button class="nav-item" data-tab="facebook">📘 Facebook</button>
+            <button class="nav-item" data-tab="custom">📰 Custom Broadcast</button>
+            <button class="nav-item" data-tab="message">✉️ Message</button>
+            <button class="nav-item" data-tab="schedule">⏰ Schedule</button>
+            <button class="nav-item" data-tab="admins">🛡️ Admins</button>
+            <button class="nav-item" data-tab="branding">🎨 Branding</button>
+            <button class="nav-item" data-tab="logs">📜 Logs</button>
+        </nav>
+
+        <div class="status-card">
+            <div class="echo-wrap" id="echoWrap">
+                <div class="echo-ring"></div>
+                <div class="echo-ring"></div>
+                <div class="echo-ring"></div>
+                <div class="echo-dot" id="echoDot"></div>
+            </div>
+            <div class="status-line"><span>WhatsApp</span><b id="statWa">—</b></div>
+            <div class="status-line"><span>Telegram</span><b id="statTg">—</b></div>
+            <div class="status-line"><span>Groups</span><b id="statGroups">—</b></div>
+            <div class="status-line"><span>Last run</span><b id="statLastRun">—</b></div>
+        </div>
+    </aside>
+
+    <main class="content">
+
+        <!-- CONNECT -->
+        <section id="tab-connect" class="tab active">
+            <h1 class="page-title">Connect WhatsApp</h1>
+            <p class="page-sub">Scan this QR from the WhatsApp account that should send the broadcasts (Settings → Linked Devices → Link a Device).</p>
+
+            <div class="card">
+                <h3>Connection</h3>
+                <div class="qr-box" id="qrBox">
+                    <span id="qrPlaceholder" style="color:var(--muted); font-size:13.5px;">Starting WhatsApp session…</span>
+                </div>
+                <div style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;">
+                    <span class="pill" id="connPill">—</span>
+                    <span id="connPhone" style="font-family: var(--font-mono); font-size:13px; color:var(--muted);"></span>
+                </div>
+                <div style="margin-top:18px; display:flex; gap:10px;">
+                    <button class="btn btn-ghost" id="btnReconnect">Reconnect</button>
+                    <button class="btn btn-danger" id="btnLogout">Log out / switch number</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- GROUPS -->
+        <section id="tab-groups" class="tab">
+            <h1 class="page-title">Broadcast Groups</h1>
+            <p class="page-sub">Choose which WhatsApp groups receive the daily job broadcast. Only groups toggled <b>on</b> get messaged.</p>
+
+            <div class="card">
+                <div class="toolbar">
+                    <input type="text" id="groupSearch" placeholder="Search groups…" style="margin-bottom:0; max-width:280px;" />
+                    <div style="display:flex; gap:8px;">
+                        <button class="btn btn-ghost" id="btnEnableAll">Enable all</button>
+                        <button class="btn btn-ghost" id="btnDisableAll">Disable all</button>
+                        <button class="btn btn-primary" id="btnRefreshGroups">🔄 Refresh from WhatsApp</button>
+                    </div>
+                </div>
+                <div class="group-list" id="groupList">
+                    <span style="color:var(--muted); font-size:13.5px;">Connect WhatsApp, then click "Refresh from WhatsApp" to load your groups.</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- TELEGRAM -->
+        <section id="tab-telegram" class="tab">
+            <h1 class="page-title">Telegram</h1>
+            <p class="page-sub">Connect a Telegram bot and choose which groups it broadcasts to — works alongside WhatsApp using the exact same schedule, no separate setup.</p>
+
+            <div class="card">
+                <h3>Bot connection <span class="pill pill-muted" id="tgConnPill">—</span></h3>
+                <p class="help-text">Don't have a bot yet? Message <b>@BotFather</b> on Telegram, send <code>/newbot</code>, and paste the token it gives you below.</p>
+                <div class="row">
+                    <div>
+                        <label>Bot token</label>
+                        <input type="password" id="tgTokenInput" placeholder="123456789:AAExampleTokenHere" autocomplete="off" />
+                    </div>
+                </div>
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <button class="btn btn-primary" id="btnTgConnect">Connect bot</button>
+                    <button class="btn btn-danger" id="btnTgDisconnect">Disconnect</button>
+                    <button class="btn btn-ghost" id="btnTgTestMessage">Send test message</button>
+                    <span id="tgConnResult" style="font-size:13px; color:var(--muted);"></span>
+                </div>
+                <p class="help-text" id="tgBotIdentity" style="margin-top:10px;"></p>
+            </div>
+
+            <div class="card">
+                <h3>Telegram groups / communities</h3>
+                <p class="page-sub" style="margin-top:-4px;">Add the connected bot to any Telegram group or community <b>as a member (admin works too)</b> — it appears here automatically within a few seconds. Only groups toggled <b>on</b> get messaged.</p>
+                <p class="help-text" style="margin-top:-4px;">Bot was already in a group <i>before</i> you connected it here? Telegram doesn't let a bot list its own groups after the fact, so open that group and send <code>/register</code> — it registers instantly and works even with the bot's privacy mode on. Then hit Refresh.</p>
+                <div class="toolbar">
+                    <input type="text" id="tgGroupSearch" placeholder="Search groups…" style="margin-bottom:0; max-width:280px;" />
+                    <div style="display:flex; gap:8px;">
+                        <button class="btn btn-ghost" id="btnTgEnableAll">Enable all</button>
+                        <button class="btn btn-ghost" id="btnTgDisableAll">Disable all</button>
+                        <button class="btn btn-primary" id="btnTgRefreshGroups">🔄 Refresh list</button>
+                    </div>
+                </div>
+                <div class="group-list" id="tgGroupList">
+                    <span style="color:var(--muted); font-size:13.5px;">Connect the bot, then add it to a Telegram group — it'll show up here automatically.</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- LINKEDIN -->
+        <section id="tab-linkedin" class="tab">
+            <h1 class="page-title">LinkedIn</h1>
+            <p class="page-sub">Posts the daily job update to a LinkedIn Company Page (or your profile) using LinkedIn's official API — no browser automation, nothing that risks the account. LinkedIn has no supported way for third-party apps to post into LinkedIn Groups any more, so a Page/profile post is the zero-cost option that works.</p>
+
+            <div class="card">
+                <h3>App credentials <span class="pill pill-muted" id="liConnPill">—</span></h3>
+                <p class="help-text">Create a free app at <b>developer.linkedin.com</b>, add the <b>"Share on LinkedIn"</b> product (instant) and, if you want to post as your Company Page, also request the free <b>"Community Management API"</b> product (needs a short review — still $0). Then paste the Client ID/Secret below and set the Redirect URI on the app to exactly match the one shown here.</p>
+                <div class="row">
+                    <div>
+                        <label>Client ID</label>
+                        <input type="text" id="liClientId" placeholder="86xxxxxxxxxxxx" autocomplete="off" />
+                    </div>
+                    <div>
+                        <label>Client Secret</label>
+                        <input type="password" id="liClientSecret" placeholder="Leave blank to keep current" autocomplete="off" />
+                    </div>
+                </div>
+                <div class="row">
+                    <div>
+                        <label>Redirect URI</label>
+                        <input type="text" id="liRedirectUri" placeholder="https://yourdomain.com/api/linkedin/callback" />
+                    </div>
+                    <div>
+                        <label>Post as</label>
+                        <select id="liPostAs">
+                            <option value="organization">Company Page</option>
+                            <option value="member">My profile</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="row">
+                    <div>
+                        <label>Organization ID <span style="font-weight:400;color:var(--muted);">(only for Company Page — the number in your Page's admin URL)</span></label>
+                        <input type="text" id="liOrgId" placeholder="e.g. 12345678" />
+                    </div>
+                    <div style="display:flex; align-items:flex-end;">
+                        <label style="display:flex; gap:6px; align-items:center; font-weight:500; color:var(--text); margin-bottom:12px;">
+                            <input type="checkbox" id="liEnabled" style="width:16px;height:16px;" /> Include in daily job broadcast
+                        </label>
+                    </div>
+                </div>
+                <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    <button class="btn btn-ghost" id="btnLiSaveConfig">Save settings</button>
+                    <button class="btn btn-primary" id="btnLiConnect">Connect LinkedIn</button>
+                    <button class="btn btn-danger" id="btnLiDisconnect">Disconnect</button>
+                    <button class="btn btn-ghost" id="btnLiTestPost">Send test post</button>
+                </div>
+                <p class="help-text" id="liConnectedAs" style="margin-top:10px;"></p>
+            </div>
+        </section>
+
+        <!-- FACEBOOK -->
+        <section id="tab-facebook" class="tab">
+            <h1 class="page-title">Facebook</h1>
+            <p class="page-sub">Posts the daily job update to a Facebook Page you manage using the official Graph API. Meta withdrew Groups-posting access from third-party apps years ago, so auto-posting into Facebook Groups isn't possible without an unofficial, account-risking workaround — a Page post is the supported, zero-cost equivalent.</p>
+
+            <div class="card">
+                <h3>App credentials <span class="pill pill-muted" id="fbConnPill">—</span></h3>
+                <p class="help-text">Create a free app at <b>developers.facebook.com</b> (type: Business), add <b>Facebook Login</b>, and set this exact Redirect URI on it. Paste the App ID/Secret below.</p>
+                <div class="row">
+                    <div>
+                        <label>App ID</label>
+                        <input type="text" id="fbAppId" placeholder="1234567890123456" autocomplete="off" />
+                    </div>
+                    <div>
+                        <label>App Secret</label>
+                        <input type="password" id="fbAppSecret" placeholder="Leave blank to keep current" autocomplete="off" />
+                    </div>
+                </div>
+                <div class="row">
+                    <div>
+                        <label>Redirect URI</label>
+                        <input type="text" id="fbRedirectUri" placeholder="https://yourdomain.com/api/facebook/callback" />
+                    </div>
+                    <div style="display:flex; align-items:flex-end;">
+                        <label style="display:flex; gap:6px; align-items:center; font-weight:500; color:var(--text); margin-bottom:12px;">
+                            <input type="checkbox" id="fbEnabled" style="width:16px;height:16px;" /> Include in daily job broadcast
+                        </label>
+                    </div>
+                </div>
+                <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    <button class="btn btn-ghost" id="btnFbSaveConfig">Save settings</button>
+                    <button class="btn btn-primary" id="btnFbConnect">Connect Facebook</button>
+                    <button class="btn btn-danger" id="btnFbDisconnect">Disconnect</button>
+                    <button class="btn btn-ghost" id="btnFbTestPost">Send test post</button>
+                </div>
+                <p class="help-text" id="fbConnectedAs" style="margin-top:10px;"></p>
+            </div>
+        </section>
+
+        <!-- CUSTOM BROADCAST -->
+        <section id="tab-custom" class="tab">
+            <h1 class="page-title">Custom Broadcast</h1>
+            <p class="page-sub">Manually share news or announcements to your groups — write a message, optionally attach a photo, pick WhatsApp and/or Telegram, and send. Groups are messaged one at a time with human-like pacing (not an instant bulk blast), and admins get notified once it's done.</p>
+
+            <div class="card">
+                <h3>Compose</h3>
+                <label>Message</label>
+                <textarea id="customText" rows="6" placeholder="Write the announcement here… (*bold* works on both WhatsApp and Telegram)"></textarea>
+
+                <label style="margin-top:14px;">Photo (optional)</label>
+                <div id="customDropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload a photo: click to browse or drag and drop">
+                    <input type="file" id="customImage" accept="image/png,image/jpeg,image/webp" hidden />
+                    <div id="dropzoneEmpty" class="dropzone-empty">
+                        <div class="dropzone-icon">🖼️</div>
+                        <p class="dropzone-text"><strong>Click to upload</strong> or drag and drop</p>
+                        <p class="dropzone-hint">PNG, JPG, or WEBP — up to 8MB</p>
+                    </div>
+                    <div id="dropzoneFile" class="dropzone-file" style="display:none;">
+                        <img id="customImagePreview" class="dropzone-thumb" alt="Selected photo preview" />
+                        <div class="dropzone-file-meta">
+                            <div id="dropzoneFileName" class="dropzone-file-name"></div>
+                            <div id="dropzoneFileSize" class="dropzone-file-size"></div>
+                        </div>
+                        <button type="button" id="dropzoneRemoveBtn" class="dropzone-remove-btn" aria-label="Remove selected photo">✕</button>
+                    </div>
+                </div>
+                <p id="dropzoneError" class="help-text" style="display:none; color:var(--danger);"></p>
+                <p class="help-text">Deleted from the server automatically right after sending.</p>
+
+                <div class="row" style="margin-top:16px;">
+                    <div>
+                        <label>Send via</label>
+                        <div style="display:flex; gap:18px; align-items:center; margin-top:6px;">
+                            <label style="display:flex; gap:6px; align-items:center; font-weight:500; color:var(--text);">
+                                <input type="checkbox" id="customViaWhatsapp" checked style="width:16px;height:16px;" /> WhatsApp
+                            </label>
+                            <label style="display:flex; gap:6px; align-items:center; font-weight:500; color:var(--text);">
+                                <input type="checkbox" id="customViaTelegram" checked style="width:16px;height:16px;" /> Telegram
+                            </label>
+                            <label style="display:flex; gap:6px; align-items:center; font-weight:500; color:var(--text);">
+                                <input type="checkbox" id="customViaLinkedin" style="width:16px;height:16px;" /> LinkedIn
+                            </label>
+                            <label style="display:flex; gap:6px; align-items:center; font-weight:500; color:var(--text);">
+                                <input type="checkbox" id="customViaFacebook" style="width:16px;height:16px;" /> Facebook
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <button class="btn btn-accent" id="btnSendCustom" style="margin-top:16px;">🚀 Send broadcast</button>
+                <p id="customStatusLine" class="help-text" style="margin-top:12px;"></p>
+            </div>
+        </section>
+
+        <!-- MESSAGE -->
+        <section id="tab-message" class="tab">
+            <h1 class="page-title">Message Template</h1>
+            <p class="page-sub">Edit the exact text sent to groups. Use placeholders like <code>{{title}}</code> inside the "per-job" block — they're filled in per job automatically.</p>
+
+            <div class="card">
+                <h3>Data source</h3>
+                <div class="row">
+                    <div>
+                        <label>Jobs API URL</label>
+                        <input type="text" id="cfgApiUrl" />
+                    </div>
+                    <div>
+                        <label>Job page URL base (job_id is appended)</label>
+                        <input type="text" id="cfgJobUrlBase" />
+                    </div>
+                </div>
+                <div class="row">
+                    <div>
+                        <label>Max jobs per message</label>
+                        <input type="number" id="cfgMaxJobs" min="1" max="50" />
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>Header (sent once, top of message)</h3>
+                <p class="help-text">Placeholders: <code>{{date}}</code>, <code>{{totalJobs}}</code></p>
+                <textarea id="tplHeader" rows="4"></textarea>
+
+                <h3>Per-job block (repeated for each job)</h3>
+                <p class="help-text">Placeholders: <code>{{index}}</code> <code>{{title}}</code> <code>{{company}}</code> <code>{{location}}</code> <code>{{experience}}</code> <code>{{workMode}}</code> <code>{{jobId}}</code> <code>{{link}}</code></p>
+                <textarea id="tplJob" rows="6"></textarea>
+
+                <h3>Footer (sent once, bottom of message)</h3>
+                <textarea id="tplFooter" rows="3"></textarea>
+
+                <h3>Empty state (used when there are zero jobs)</h3>
+                <textarea id="tplEmpty" rows="4"></textarea>
+
+                <div style="display:flex; gap:10px; margin-top:6px;">
+                    <button class="btn btn-primary" id="btnSaveTemplate">Save message settings</button>
+                    <button class="btn btn-ghost" id="btnLoadPreview">🔄 Fetch live preview</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>Live preview <span id="previewJobCount" class="pill pill-muted"></span></h3>
+                <div class="wa-frame">
+                    <div class="chat-bubble" id="previewBubble">Click "Fetch live preview" to see today's message rendered from the real API.</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- SCHEDULE -->
+        <section id="tab-schedule" class="tab">
+            <h1 class="page-title">Schedule</h1>
+            <p class="page-sub">Set when jobs are fetched and the window over which group sends are randomly spread (to look human, not bulk-blasted).</p>
+
+            <div class="card">
+                <h3>Automatic sending <span class="pill pill-muted" id="schedStatePill"></span></h3>
+                <div class="row">
+                    <div>
+                        <label>Enabled</label>
+                        <div class="toggle" id="toggleSchedEnabled"></div>
+                    </div>
+                    <div>
+                        <label>Timezone</label>
+                        <input type="text" id="cfgTimezone" />
+                    </div>
+                </div>
+                <div class="row">
+                    <div>
+                        <label>Prepare / fetch time</label>
+                        <input type="time" id="cfgPrepareTime" />
+                    </div>
+                    <div>
+                        <label>Send window start</label>
+                        <input type="time" id="cfgWindowStart" />
+                    </div>
+                    <div>
+                        <label>Send window end</label>
+                        <input type="time" id="cfgWindowEnd" />
+                    </div>
+                </div>
+                <div class="row">
+                    <div>
+                        <label>Minimum gap between group sends (seconds)</label>
+                        <input type="number" id="cfgMinGap" min="1" />
+                    </div>
+                    <div>
+                        <label>Admin summary delay — min (minutes)</label>
+                        <input type="number" id="cfgAdminDelayMin" min="0" />
+                    </div>
+                    <div>
+                        <label>Admin summary delay — max (minutes)</label>
+                        <input type="number" id="cfgAdminDelayMax" min="0" />
+                    </div>
+                </div>
+                <button class="btn btn-primary" id="btnSaveSchedule">Save schedule</button>
+            </div>
+
+            <div class="card">
+                <h3>Manual trigger</h3>
+                <p class="help-text">Sends immediately to all enabled groups (spread over ~1 minute), for testing.</p>
+                <button class="btn btn-accent" id="btnSendNow">🚀 Send now</button>
+                <span id="sendNowResult" style="margin-left:12px; font-size:13px; color:var(--muted);"></span>
+            </div>
+        </section>
+
+        <!-- ADMINS -->
+        <section id="tab-admins" class="tab">
+            <h1 class="page-title">Admin Numbers</h1>
+            <p class="page-sub">These numbers receive a WhatsApp summary after every broadcast (jobs sent, groups messaged, any failures).</p>
+
+            <div class="card">
+                <div class="admin-chip-list" id="adminChips"></div>
+                <div class="inline-form">
+                    <input type="text" id="newAdminNumber" placeholder="e.g. 919876543210 (with country code)" />
+                    <button class="btn btn-primary" id="btnAddAdmin">Add</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>Test the summary flow</h3>
+                <p class="page-sub">Sends the admin summary immediately (no waiting for the scheduled delay) so you can confirm it actually reaches every number above.</p>
+                <button class="btn btn-accent" id="btnTestAdminSummary">📩 Send test admin summary now</button>
+                <span id="adminSummaryTestResult" style="margin-left:12px; font-size:13px; color:var(--muted);"></span>
+                <p id="adminSummaryStatusLine" class="help-text" style="margin-top:10px;"></p>
+            </div>
+        </section>
+
+        <!-- BRANDING -->
+        <section id="tab-branding" class="tab">
+            <h1 class="page-title">Branding</h1>
+            <p class="page-sub">Controls how the dashboard looks. Doesn't affect the WhatsApp message text.</p>
+
+            <div class="card">
+                <h3>Identity</h3>
+                <div class="row">
+                    <div>
+                        <label>Organisation name</label>
+                        <input type="text" id="brandOrgName" />
+                    </div>
+                    <div>
+                        <label>Tagline</label>
+                        <input type="text" id="brandTagline" />
+                    </div>
+                </div>
+                <div class="row">
+                    <div>
+                        <label>Primary color</label>
+                        <input type="color" class="color-swatch" id="brandPrimary" />
+                    </div>
+                    <div>
+                        <label>Accent color</label>
+                        <input type="color" class="color-swatch" id="brandAccent" />
+                    </div>
+                </div>
+                <button class="btn btn-primary" id="btnSaveBranding">Save branding</button>
+            </div>
+
+            <div class="card">
+                <h3>Logo</h3>
+                <img id="brandLogoPreview" src="/uploads/logo.jpeg" style="width:80px;height:80px;border-radius:12px;object-fit:cover;border:1px solid var(--border); margin-bottom:14px;" />
+                <input type="file" id="logoUpload" accept="image/png,image/jpeg,image/svg+xml,image/webp" />
+                <p class="help-text">PNG, JPG, SVG, or WEBP, up to 3MB.</p>
+            </div>
+        </section>
+
+        <!-- LOGS -->
+        <section id="tab-logs" class="tab">
+            <h1 class="page-title">Live Logs</h1>
+            <p class="page-sub">Everything the bot does, in real time — fetches, sends, connection events, errors.</p>
+            <div class="card">
+                <div class="log-console" id="logConsole"></div>
+            </div>
+        </section>
+
+    </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

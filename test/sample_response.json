@@ -1,0 +1,34 @@
+{
+  "data": [
+    {
+      "job_id": "MED-E1884-0001",
+      "title": "Digital Marketing Specialist",
+      "company_name": "Medi Elves Pty Ltd",
+      "location": "Kochi, Kerala",
+      "min_experience": 1,
+      "max_experience": 3,
+      "work_mode": "Hybrid"
+    },
+    {
+      "job_id": "MED-E1884-0002",
+      "title": "React Native Developer",
+      "company_name": "Infocreon Solutions",
+      "location": "Remote",
+      "min_experience": 2,
+      "max_experience": 5,
+      "work_mode": "Remote"
+    },
+    {
+      "job_id": "MED-E1884-0003",
+      "title": "HR Executive",
+      "company_name": "Prathidhwani Careers",
+      "location": "Kochi, Kerala",
+      "min_experience": 0,
+      "max_experience": 2,
+      "work_mode": "On-site"
+    }
+  ],
+  "meta": {
+    "total": 3
+  }
+}

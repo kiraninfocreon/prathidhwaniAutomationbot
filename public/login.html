@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sign in · Prathidhwani Job Broadcaster</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body style="display:flex; align-items:center; justify-content:center; min-height:100vh;">
+    <div class="card" style="width:320px;">
+        <h3 style="justify-content:center;">🔐 Dashboard Login</h3>
+        <input type="password" id="password" placeholder="Password" />
+        <button class="btn btn-primary" id="btnLogin" style="width:100%; justify-content:center;">Sign in</button>
+        <p id="err" style="color:var(--danger); font-size:13px; margin-top:10px; display:none;"></p>
+    </div>
+    <script>
+        async function doLogin() {
+            const password = document.getElementById('password').value;
+            const res = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                window.location.href = '/';
+            } else {
+                const err = document.getElementById('err');
+                err.textContent = data.error || 'Login failed';
+                err.style.display = 'block';
+            }
+        }
+        document.getElementById('btnLogin').addEventListener('click', doLogin);
+        document.getElementById('password').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+    </script>
+</body>
+</html>

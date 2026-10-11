@@ -1,0 +1,22 @@
+{
+  "name": "prathidhwani-wa-job-bot",
+  "version": "1.0.0",
+  "description": "Prathidhwani WhatsApp Job Broadcast Bot - frontend controlled, DigitalOcean Droplet ready",
+  "main": "server/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.20",
+    "axios": "^1.14.0",
+    "dotenv": "^17.4.0",
+    "express": "^4.19.2",
+    "form-data": "^4.0.0",
+    "multer": "^2.0.1",
+    "node-cron": "^3.0.3",
+    "qrcode": "^1.5.3"
+  }
+}
