@@ -2,20 +2,34 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" id="themeColorMeta" content="#0E1424" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Prathidhwani" />
 <title>Prathidhwani · WhatsApp Job Broadcaster</title>
 <link rel="stylesheet" href="/style.css" />
 <link rel="icon" href="/uploads/logo.jpeg" />
+<script>
+// Apply the saved light/dark theme before first paint so there's no flash
+// of the wrong theme while the page loads.
+(function () {
+    try {
+        var t = localStorage.getItem('wjb-theme');
+        if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', t);
+    } catch (_) { /* default (light) stays */ }
+})();
+</script>
 </head>
 <body>
 
 <div class="app">
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
         <div class="brand">
-            <img id="logoImg" class="brand-logo" src="/uploads/logo.jpeg" alt="logo" />
+            <img id="logoImg" class="brand-logo" src="/uploads/logo.jpeg" alt="logo" data-logo-src />
             <div>
-                <div class="brand-name" id="orgNameLabel">Prathidhwani</div>
-                <div class="brand-tag" id="orgTagLabel">Job Broadcaster</div>
+                <div class="brand-name" id="orgNameLabel" data-org-name>Prathidhwani</div>
+                <div class="brand-tag" id="orgTagLabel" data-org-tag>Job Broadcaster</div>
             </div>
         </div>
 
@@ -45,9 +59,32 @@
             <div class="status-line"><span>Groups</span><b id="statGroups">—</b></div>
             <div class="status-line"><span>Last run</span><b id="statLastRun">—</b></div>
         </div>
+
+        <button class="theme-btn js-theme-toggle" type="button" aria-label="Toggle dark mode">
+            <span class="theme-btn-icon">🌙</span><span class="theme-btn-label">Dark mode</span>
+        </button>
     </aside>
 
+    <div class="nav-backdrop" id="navBackdrop"></div>
+
     <main class="content">
+
+        <!-- Top app bar — mobile/tablet only: hamburger drawer nav, compact
+             live status, theme switch. Desktop keeps the full sidebar. -->
+        <header class="topbar">
+            <button class="hamburger" id="navToggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar">
+                <span></span><span></span><span></span>
+            </button>
+            <div class="topbar-brand">
+                <img class="topbar-logo" src="/uploads/logo.jpeg" alt="" data-logo-src />
+                <span class="topbar-org" data-org-name>Prathidhwani</span>
+            </div>
+            <span class="topbar-spacer"></span>
+            <span class="topbar-wa" id="topbarWa"><i class="wa-dot"></i><span id="topbarWaText">—</span></span>
+            <button class="theme-btn theme-btn-compact js-theme-toggle" type="button" aria-label="Toggle dark mode">
+                <span class="theme-btn-icon">🌙</span>
+            </button>
+        </header>
 
         <!-- CONNECT -->
         <section id="tab-connect" class="tab active">

@@ -1,0 +1,5 @@
+node_modules/
+
+# Headless-Chrome test profile used by shots/cdp_shots.js — contains session
+# storage/cookies, never belongs in the repo.
+shots/cdp-profile/

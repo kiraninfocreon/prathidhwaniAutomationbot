@@ -146,9 +146,15 @@ pm2 stop prathidhwani-wa-bot
 ```
 
 - **Backups**: `PERSIST_DIR` is everything — the WhatsApp session
-  (`baileys_auth/`), `config.json`, `groups.json`, and `telegramGroups.json`.
-  Back this one folder up. Losing `baileys_auth/` just means re-scanning the
-  QR (harmless, just an interruption) — everything else (schedule, template,
+  (`baileys_auth/`), its rolling crash-repair snapshot (`baileys_auth_backup/`),
+  `config.json`, `groups.json`, and `telegramGroups.json`.
+  Back this one folder up. The bot keeps `baileys_auth_backup/` current after
+  every credential update, so even a corrupted `baileys_auth/creds.json`
+  (killed mid-write, half-finished deploy) is restored automatically instead
+  of forcing a re-scan — only a genuine logout from the phone side (or an
+  explicit "Log out / switch number") ever requires scanning again, and after
+  that re-scan the saved group selections re-attach by themselves when the
+  same number links back. Everything else (schedule, template,
   groups, admins) is preserved separately in the same folder.
 - **Switching WhatsApp numbers**: use "Log out / switch number" on the
   Connect tab. It clears the session cleanly and shows a fresh QR.

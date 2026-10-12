@@ -30,15 +30,75 @@
         toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
     }
 
-    // ---------- tabs ----------
-    $$('.nav-item').forEach(btn => {
-        btn.addEventListener('click', () => {
-            $$('.nav-item').forEach(b => b.classList.remove('active'));
-            $$('.tab').forEach(t => t.classList.remove('active'));
-            btn.classList.add('active');
-            $(`#tab-${btn.dataset.tab}`).classList.add('active');
+    // ---------- theme (light / dark) ----------
+    // The boot script in <head> applies the saved theme before first paint;
+    // here we only keep the buttons/icons/meta in sync and handle toggling.
+    const THEME_KEY = 'wjb-theme';
+    const themeColorMeta = $('#themeColorMeta');
+
+    function currentTheme() {
+        return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+    }
+
+    function applyTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+        try { localStorage.setItem(THEME_KEY, theme); } catch (_) { /* private mode */ }
+        $$('.js-theme-toggle').forEach(btn => {
+            const icon = btn.querySelector('.theme-btn-icon');
+            if (icon) icon.textContent = theme === 'dark' ? '☀️' : '🌙';
+            const label = btn.querySelector('.theme-btn-label');
+            if (label) label.textContent = theme === 'dark' ? 'Light mode' : 'Dark mode';
+            btn.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
         });
+        if (themeColorMeta) themeColorMeta.setAttribute('content', theme === 'dark' ? '#080C16' : '#F3F5FA');
+    }
+
+    applyTheme(currentTheme());
+    $$('.js-theme-toggle').forEach(btn => {
+        btn.addEventListener('click', () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark'));
     });
+
+    // ---------- mobile drawer navigation ----------
+    // On phones/tablets the sidebar becomes an off-canvas drawer opened by
+    // the hamburger in the sticky top bar; on desktop it stays docked.
+    const sidebarEl = $('#sidebar');
+    const navBackdrop = $('#navBackdrop');
+    const navToggle = $('#navToggle');
+
+    function setDrawer(open) {
+        if (!sidebarEl) return;
+        sidebarEl.classList.toggle('open', open);
+        if (navBackdrop) navBackdrop.classList.toggle('show', open);
+        if (navToggle) navToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        document.body.classList.toggle('nav-open', open);
+    }
+
+    if (navToggle) {
+        navToggle.addEventListener('click', () => setDrawer(!sidebarEl.classList.contains('open')));
+    }
+    if (navBackdrop) navBackdrop.addEventListener('click', () => setDrawer(false));
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setDrawer(false); });
+
+    // ---------- tabs ----------
+    function setActiveTab(tabName) {
+        const btn = $(`.nav-item[data-tab="${tabName}"]`);
+        if (!btn) return;
+        $$('.nav-item').forEach(b => b.classList.toggle('active', b === btn));
+        $$('.tab').forEach(t => t.classList.toggle('active', t.id === `tab-${tabName}`));
+        try { localStorage.setItem('wjb-active-tab', tabName); } catch (_) { /* private mode */ }
+        // Picking an item from the drawer should navigate, not leave the
+        // drawer sitting on top of the content.
+        if (window.matchMedia('(max-width: 900px)').matches) setDrawer(false);
+    }
+
+    $$('.nav-item').forEach(btn => {
+        btn.addEventListener('click', () => setActiveTab(btn.dataset.tab));
+    });
+
+    // Restore whichever tab was open last visit.
+    let savedTab = null;
+    try { savedTab = localStorage.getItem('wjb-active-tab'); } catch (_) { /* private mode */ }
+    if (savedTab) setActiveTab(savedTab);
 
     // ---------- state polling ----------
     let lastWaReady = false;
@@ -72,18 +132,35 @@
             renderAdminSummaryStatus(s.broadcast);
 
             $('#statWa').textContent = wa.ready ? 'Connected' : (wa.qrDataUrl ? 'Awaiting scan' : 'Not connected');
+
+            // Compact live-status chip in the mobile top bar
+            const topbarWa = $('#topbarWa');
+            if (topbarWa) {
+                topbarWa.classList.toggle('live', !!wa.ready);
+                topbarWa.classList.toggle('down', !wa.ready && !!wa.lastError);
+                const chipText = $('#topbarWaText');
+                if (chipText) {
+                    chipText.textContent = wa.ready
+                        ? 'Live'
+                        : (wa.lastError ? 'Error' : (wa.qrDataUrl ? 'Scan QR' : 'Starting…'));
+                }
+            }
             $('#statLastRun').textContent = s.broadcast.lastRun
                 ? new Date(s.broadcast.lastRun.finishedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' })
                 : 'Never';
 
-            // QR box
+            // QR box — styled scanner panel (see .qr-box / .qr-success)
             const qrBox = $('#qrBox');
             if (wa.ready) {
-                qrBox.innerHTML = `<div style="text-align:center;"><div style="font-size:34px;">✅</div><div style="margin-top:8px; font-weight:600;">WhatsApp connected</div></div>`;
+                qrBox.innerHTML = `<div class="qr-success">
+                    <span class="qr-success-icon">✅</span>
+                    <span class="qr-success-title">WhatsApp connected${wa.phoneNumber ? ` · +${wa.phoneNumber}` : ''}</span>
+                    <span class="qr-success-sub">Session is saved — it reconnects on its own, no re-scan needed</span>
+                </div>`;
             } else if (wa.qrDataUrl) {
                 qrBox.innerHTML = `<img src="${wa.qrDataUrl}" alt="Scan this QR code with WhatsApp" />`;
             } else {
-                qrBox.innerHTML = `<span style="color:var(--muted); font-size:13.5px;">${wa.initializing ? 'Starting WhatsApp session…' : 'Not connected yet'}</span>`;
+                qrBox.innerHTML = `<span style="color:#9FB2D8; font-size:13.5px; position:relative; z-index:1;">${wa.initializing ? 'Starting WhatsApp session…' : 'Not connected yet — click Reconnect below'}</span>`;
             }
 
             if (wa.ready && !lastWaReady) toast('WhatsApp connected!');
@@ -219,10 +296,12 @@
     function applyBranding(b) {
         document.documentElement.style.setProperty('--primary', b.primaryColor);
         document.documentElement.style.setProperty('--accent', b.accentColor);
-        $('#orgNameLabel').textContent = b.orgName;
-        $('#orgTagLabel').textContent = b.tagline;
+        // Every element that shows the org identity (sidebar brand + mobile
+        // top bar) carries data-org-name / data-org-tag / data-logo-src.
+        $$('[data-org-name]').forEach(el => { el.textContent = b.orgName; });
+        $$('[data-org-tag]').forEach(el => { el.textContent = b.tagline; });
         if (b.logoUrl) {
-            $('#logoImg').src = b.logoUrl;
+            $$('[data-logo-src]').forEach(el => { el.src = b.logoUrl; });
             $('#brandLogoPreview').src = b.logoUrl;
         }
         document.title = `${b.orgName} · WhatsApp Job Broadcaster`;
@@ -875,8 +954,9 @@
             const res = await fetch('/api/branding/logo', { method: 'POST', body: form });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Upload failed');
-            $('#logoImg').src = data.logoUrl + '?t=' + Date.now();
-            $('#brandLogoPreview').src = data.logoUrl + '?t=' + Date.now();
+            const bust = '?t=' + Date.now();
+            $$('[data-logo-src]').forEach(el => { el.src = data.logoUrl + bust; });
+            $('#brandLogoPreview').src = data.logoUrl + bust;
             toast('Logo updated');
         } catch (err) {
             toast(err.message, true);

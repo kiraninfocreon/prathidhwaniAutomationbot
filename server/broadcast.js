@@ -140,6 +140,54 @@ function sleepMs(ms) {
 // retries — used for both the daily job-broadcast summary and the custom
 // broadcast summary (see server/customBroadcast.js), so both get the same
 // resilience to a transient WhatsApp reconnect instead of silently dropping.
+
+// WhatsApp's client routinely reconnects for a few seconds around the time
+// the summary fires. Instead of burning every retry against a socket that
+// is about to come back, wait for the connection first — this is the
+// difference between "admins got the summary" and "summary failed" on a
+// completely routine reconnect. Guarded by typeof so the offline test mock
+// of server/whatsapp.js (which has no waitForReady) keeps its old behaviour.
+async function waitUntilReady(maxWaitMs = 45000) {
+    if (wa.getState().ready) return true;
+    if (typeof wa.waitForReady === 'function') return !!(await wa.waitForReady(maxWaitMs));
+    return !!wa.getState().ready;
+}
+
+// Even after the in-loop retries above, an admin can still be missed (the
+// connection was down for the whole retry window, phone on DND edge cases,
+// etc). Summary delivery must not be a one-shot: any admin that failed gets
+// another attempt a few minutes later, up to ADMIN_RETRY_MAX_ATTEMPTS
+// passes, entirely in the background (it never delays the caller or changes
+// the result already reported to the dashboard). In-memory by design — a
+// restart during the wait window is already covered by the persisted
+// pending-summary recovery in resumePendingAdminSummary().
+const ADMIN_RETRY_DELAY_MS = 5 * 60 * 1000;
+const ADMIN_RETRY_MAX_ATTEMPTS = 2;
+const adminRetryAttempts = new Map(); // phone -> late-retry passes so far
+
+function scheduleAdminRetry(phones, message) {
+    const eligible = phones.filter(p => (adminRetryAttempts.get(p) || 0) < ADMIN_RETRY_MAX_ATTEMPTS);
+    if (!eligible.length) return;
+    logger.info(`📩 ${eligible.length} admin(s) missed the summary — scheduling a late retry in ${Math.round(ADMIN_RETRY_DELAY_MS / 60000)}min`);
+    const timer = setTimeout(async () => {
+        const stillFailed = [];
+        for (const admin of eligible) {
+            adminRetryAttempts.set(admin, (adminRetryAttempts.get(admin) || 0) + 1);
+            try {
+                if (!(await waitUntilReady())) throw new Error('WhatsApp is not connected');
+                await withTimeout(wa.sendMessage(wa.normalizeAdminId(admin), message), SEND_TIMEOUT_MS, 'Admin summary late retry');
+                logger.info(`📩 Late admin-summary retry reached ${admin}`);
+                adminRetryAttempts.delete(admin);
+            } catch (err) {
+                logger.warn(`⏳ Late admin-summary retry to ${admin} failed`, err.message);
+                stillFailed.push(admin);
+            }
+        }
+        if (stillFailed.length) scheduleAdminRetry(stillFailed, message);
+    }, ADMIN_RETRY_DELAY_MS);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+}
+
 async function sendToAdmins(message) {
     const config = store.getConfig();
     if (!config.admins || !config.admins.length) {
@@ -156,12 +204,13 @@ async function sendToAdmins(message) {
         const MAX_ATTEMPTS = 4;
         for (let attempt = 1; attempt <= MAX_ATTEMPTS && !sent; attempt++) {
             try {
-                if (!wa.getState().ready) {
+                if (!(await waitUntilReady())) {
                     throw new Error('WhatsApp is not connected');
                 }
                 await withTimeout(wa.sendMessage(id, message), SEND_TIMEOUT_MS, 'Admin summary send');
                 logger.info(`📩 Admin summary sent to ${admin}`);
                 succeeded.push(admin);
+                adminRetryAttempts.delete(admin);
                 sent = true;
             } catch (err) {
                 if (attempt < MAX_ATTEMPTS) {
@@ -174,6 +223,8 @@ async function sendToAdmins(message) {
             }
         }
     }
+
+    if (failed.length) scheduleAdminRetry(failed, message);
 
     return { sentAt: new Date().toISOString(), succeeded, failed };
 }
