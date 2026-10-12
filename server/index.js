@@ -117,6 +117,23 @@ app.post('/api/wa/reconnect', async (req, res) => {
     }
 });
 
+// "Clear cache → fresh QR" action (shown on the dashboard only while NOT
+// connected). Wipes the saved WhatsApp session + its crash-repair snapshot
+// and immediately starts a new pairing — without touching the saved group
+// selections (preserveGroups), since nobody is switching accounts here,
+// they just need a clean, scannable QR again. This is intentionally
+// different from /api/wa/logout, which is the connected-state "switch
+// number" action and clears groups too.
+app.post('/api/wa/fresh-qr', async (req, res) => {
+    try {
+        await wa.logoutAndReset({ preserveGroups: true });
+        logger.info('🧹 Dashboard cleared the WhatsApp session cache — generating a fresh QR');
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // ---------- Config ----------
 app.get('/api/config', (req, res) => {
     res.json(store.getPublicConfig());

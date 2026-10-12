@@ -100,9 +100,10 @@
                     <span class="pill" id="connPill">—</span>
                     <span id="connPhone" style="font-family: var(--font-mono); font-size:13px; color:var(--muted);"></span>
                 </div>
-                <div style="margin-top:18px; display:flex; gap:10px;">
+                <div style="margin-top:18px; display:flex; gap:10px; flex-wrap:wrap;">
                     <button class="btn btn-ghost" id="btnReconnect">Reconnect</button>
-                    <button class="btn btn-danger" id="btnLogout">Log out / switch number</button>
+                    <button class="btn btn-primary" id="btnFreshQr" style="display:none;">🧹 Clear cache &amp; new QR</button>
+                    <button class="btn btn-danger" id="btnLogout" style="display:none;">Log out / switch number</button>
                 </div>
             </div>
         </section>

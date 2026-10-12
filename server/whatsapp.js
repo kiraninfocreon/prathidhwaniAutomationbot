@@ -103,15 +103,31 @@ const SENT_CACHE_MAX_ENTRIES = 500;
 // Reconnect backoff: 5s → 10s → 20s → 40s → 60s (capped), counted per
 // consecutive close without an intervening successful open. The old fixed
 // 10s-forever timer is what turned a long outage into a rate-limit magnet.
-const RECONNECT_BASE_DELAY_MS = 5000;
-const RECONNECT_MAX_DELAY_MS = 60000;
 // WhatsApp forces a reconnect immediately after a QR scan (disconnect
 // reason 515 / restartRequired) so the new device can present full
 // credentials — that one must reopen almost instantly, not after a delay.
-const RESTART_REQUIRED_DELAY_MS = 1500;
 // Conflicts (440) mean WhatsApp's servers still see a duplicate connection;
 // give it longer to drop before retrying, as before.
-const CONFLICT_DELAY_MS = 20000;
+//
+// Kept in one mutable object and read lazily at each use (never captured
+// into a const at module load) so the offline test suite can shrink the
+// waits — same pattern as server/telegram.js's `timings` export.
+const timings = {
+    RECONNECT_BASE_DELAY_MS: 5000,
+    RECONNECT_MAX_DELAY_MS: 60000,
+    RESTART_REQUIRED_DELAY_MS: 1500,
+    CONFLICT_DELAY_MS: 20000,
+    // How long after WhatsApp accepts a QR scan (isNewLogin) we wait for the
+    // connection to actually finish opening before force-restarting the
+    // session ourselves. Without this, a post-scan handshake that never
+    // completes leaves the dashboard on "loading" forever with zero feedback
+    // — the exact "I scanned, nothing comes up" hang.
+    PAIRING_WATCHDOG_MS: 45000,
+    // After this many closes while still trying to finish a link, stop
+    // claiming "finishing the link…" and fall back to the plain
+    // not-connected state so the fresh-QR/reconnect buttons make sense again.
+    PAIRING_MAX_RETRIES: 3
+};
 
 // Wait for the post-'open' connection to settle before hitting group APIs —
 // right after a scan WhatsApp may force the 515 restart, and a discovery
@@ -154,7 +170,12 @@ let state = {
     qrDataUrl: null,
     initializing: false,
     lastError: null,
-    phoneNumber: null
+    phoneNumber: null,
+    // True from the moment WhatsApp accepts a QR scan (isNewLogin) until the
+    // connection finishes opening (or the link attempt clearly fails) — the
+    // dashboard uses it to show "finishing the link…" instead of a stale,
+    // already-consumed QR with a "Waiting for QR scan" pill.
+    pairing: false
 };
 
 // Guards against overlapping logout/init calls and stray reconnect timers so
@@ -187,6 +208,12 @@ let lastDiscoveryAttempt = 0;
 let discoveryTimer = null;
 let watchdogTimer = null;
 let authSnapshotTimer = null;
+let pairingWatchdogTimer = null;
+// In-flight write of creds.json (see the creds.update listener below) —
+// awaited by initialize() and logoutAndReset() so a reconnect that lands
+// milliseconds after a scan can never read creds mid-write and silently
+// lose the pairing the user just completed.
+let credsSavePromise = null;
 
 const groupMetaCache = new Map(); // jid -> { data: GroupMetadata, ts: number }
 const sentMessageCache = new Map(); // message id -> proto.IMessage
@@ -221,6 +248,39 @@ function clearDiscoveryTimer() {
         clearTimeout(discoveryTimer);
         discoveryTimer = null;
     }
+}
+
+function clearPairingWatchdog() {
+    if (pairingWatchdogTimer) {
+        clearTimeout(pairingWatchdogTimer);
+        pairingWatchdogTimer = null;
+    }
+}
+
+// Armed the moment WhatsApp accepts a QR scan (isNewLogin). If the
+// connection never finishes opening — the server asked for a restart, we
+// reconnected, and then the handshake silently stalled — tear the socket
+// down and re-initialise with the credentials we just saved. That login
+// path needs no QR, and if those credentials turn out to be dead we fall
+// into the normal wipe-and-fresh-QR flow instead of hanging forever.
+function armPairingWatchdog() {
+    clearPairingWatchdog();
+    pairingWatchdogTimer = setTimeout(() => {
+        pairingWatchdogTimer = null;
+        try {
+            if (shuttingDown || isResetting || state.ready || !state.pairing) return;
+            logger.warn('⏱ WhatsApp accepted the QR scan but the connection never finished opening — restarting the session with the saved credentials');
+            const stuck = sock;
+            if (stuck) {
+                sock = null;
+                teardownSocket(stuck);
+            }
+            state.qrDataUrl = null;
+            emitState();
+            initialize().catch(err => logger.error('Post-pairing reconnect failed', err.message));
+        } catch (_) { /* never let the watchdog itself crash the process */ }
+    }, timings.PAIRING_WATCHDOG_MS);
+    if (pairingWatchdogTimer && typeof pairingWatchdogTimer.unref === 'function') pairingWatchdogTimer.unref();
 }
 
 // Exponential-ish backoff (10s, 20s, 30s... capped at 60s) so a persistently
@@ -399,6 +459,7 @@ async function logoutAndReset({ preserveGroups = false } = {}) {
     clearReconnectTimer();
     clearInitRetryTimer();
     clearDiscoveryTimer();
+    clearPairingWatchdog();
     initRetryAttempts = 0;
     consecutiveCloseCount = 0;
     lastQrRaw = null;
@@ -424,6 +485,7 @@ async function logoutAndReset({ preserveGroups = false } = {}) {
     state.qrDataUrl = null;
     state.phoneNumber = null;
     state.initializing = false;
+    state.pairing = false;
     emitState();
 
     // Both the live auth folder AND its snapshot — a restore must never
@@ -461,7 +523,23 @@ async function logoutAndReset({ preserveGroups = false } = {}) {
 
 function wireEvents(s, saveCreds) {
     s.ev.on('connection.update', async (update) => {
-        const { connection, qr, lastDisconnect } = update;
+        const { connection, qr, lastDisconnect, isNewLogin } = update;
+
+        // WhatsApp accepted the scan: pair-success happened and it is now
+        // asking this device to restart with full credentials (the usual 515
+        // follows). Until now the dashboard kept showing the consumed QR with
+        // a "Waiting for QR scan" pill — which is exactly the "I scanned and
+        // nothing came up" experience. Flag pairing, drop the stale QR, and
+        // arm a watchdog so a handshake that silently stalls can't hang us.
+        if (isNewLogin) {
+            logger.info('🔗 QR scan accepted by WhatsApp — finishing device link…');
+            state.pairing = true;
+            state.qrDataUrl = null;
+            state.lastError = null;
+            lastQrRaw = null;
+            emitState();
+            armPairingWatchdog();
+        }
 
         if (qr) {
             if (qr !== lastQrRaw) {
@@ -479,7 +557,9 @@ function wireEvents(s, saveCreds) {
 
         if (connection === 'open') {
             logger.info('✅ WhatsApp connected and ready');
+            clearPairingWatchdog();
             state.ready = true;
+            state.pairing = false;
             state.qrDataUrl = null;
             state.initializing = false;
             state.lastError = null;
@@ -531,6 +611,12 @@ function wireEvents(s, saveCreds) {
             );
             state.ready = false;
             state.qrDataUrl = null;
+            // The scan handshake this close interrupted is over (successfully
+            // or not) — stop claiming "finishing the link…". If a link was in
+            // flight the branches below keep `pairing` set while they retry
+            // with the saved credentials, so the dashboard still shows
+            // progress instead of a dead QR.
+            clearPairingWatchdog();
             emitState();
 
             // Any discovery scheduled for the old connection is now moot.
@@ -559,6 +645,7 @@ function wireEvents(s, saveCreds) {
                 // selections are preserved (see logoutAndReset) so the same
                 // number re-links with everything intact.
                 logger.warn(`🔌 Session is unusable (${isLoggedOut ? 'logged out by WhatsApp' : 'bad session'}) — clearing saved credentials and generating a fresh QR`);
+                state.pairing = false;
                 logoutAndReset({ preserveGroups: true }).catch(err => logger.error('Auto reset after logout failed', err.message));
                 return;
             }
@@ -569,7 +656,7 @@ function wireEvents(s, saveCreds) {
             if (isRestartRequired) {
                 // WhatsApp forces this right after a QR scan so the new
                 // device can present full credentials — reopen immediately.
-                delay = RESTART_REQUIRED_DELAY_MS;
+                delay = timings.RESTART_REQUIRED_DELAY_MS;
                 logger.info('🔄 WhatsApp requested a restart (normal right after linking) — reopening immediately with the saved session, no QR needed');
             } else if (isConflict) {
                 // A "conflict" means WhatsApp's servers briefly saw two live
@@ -582,14 +669,17 @@ function wireEvents(s, saveCreds) {
                 // connection on WhatsApp's side has time to fully drop before
                 // we try again, otherwise we'd just trigger another conflict
                 // immediately.
-                delay = CONFLICT_DELAY_MS;
+                delay = timings.CONFLICT_DELAY_MS;
                 logger.warn('⚔️ Conflict disconnect (duplicate/overlapping connection) — keeping saved session and reconnecting shortly, no QR needed');
             } else if (!hasSavedCreds()) {
                 // Fresh pairing flow — WhatsApp timed out waiting for a scan,
                 // there is no session to protect here. Keep the QR cycling
                 // quickly instead of applying failure backoff, so someone
                 // standing at the dashboard can scan without a long wait.
-                delay = RECONNECT_BASE_DELAY_MS;
+                delay = timings.RECONNECT_BASE_DELAY_MS;
+                // This close was just an unscanned QR timing out — there was
+                // no accepted scan behind it, so drop the pairing flag too.
+                state.pairing = false;
                 logger.info('↻ QR pairing attempt expired — a fresh code appears in 5s (scan any time)');
             } else {
                 // Repeated failures while a real session exists → exponential
@@ -597,9 +687,19 @@ function wireEvents(s, saveCreds) {
                 // doesn't hammer WhatsApp's edge the way the old fixed 10s
                 // timer did.
                 const step = Math.max(0, consecutiveCloseCount - 1);
-                delay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * Math.pow(2, Math.min(step, 4)));
+                delay = Math.min(timings.RECONNECT_MAX_DELAY_MS, timings.RECONNECT_BASE_DELAY_MS * Math.pow(2, Math.min(step, 4)));
                 logger.info(`↻ Reconnecting in ${Math.round(delay / 1000)}s (attempt ${consecutiveCloseCount}) — saved session will be reused, no QR needed`);
+                // A link attempt that keeps dying on reconnects isn't "still
+                // finishing" any more — after a few rounds fall back to the
+                // plain not-connected UI so the clear-cache/new-QR action is
+                // reachable instead of an endless spinner.
+                if (state.pairing && consecutiveCloseCount >= timings.PAIRING_MAX_RETRIES) {
+                    logger.warn(`⏱ Link attempt abandoned after ${consecutiveCloseCount} reconnects — showing the plain disconnected state (a fresh QR / clear-cache is available)`);
+                    state.pairing = false;
+                }
             }
+
+            emitState();
 
             clearReconnectTimer();
             reconnectTimer = setTimeout(() => {
@@ -615,13 +715,25 @@ function wireEvents(s, saveCreds) {
     // them — required so the session survives a restart instead of forcing a
     // fresh QR scan every time the process restarts. Once the connection is
     // open we also refresh the crash-repair snapshot shortly after.
-    s.ev.on('creds.update', async (update) => {
-        try {
-            await saveCreds(update);
-            if (state.ready) scheduleAuthSnapshot();
-        } catch (err) {
-            logger.error('❌ Failed persisting WhatsApp credentials', err.message);
-        }
+    s.ev.on('creds.update', (update) => {
+        // Track the write as an in-flight promise: right after a scan,
+        // Baileys emits creds.update and then (a few ms later) closes with
+        // 515 — the follow-up initialize() awaits `credsSavePromise` so it
+        // can never read creds.json mid-write and mistake a torn file for
+        // corruption (which used to silently throw away a just-accepted
+        // pairing and put a fresh QR on screen).
+        const write = (async () => {
+            try {
+                await saveCreds(update);
+                if (state.ready) scheduleAuthSnapshot();
+            } catch (err) {
+                logger.error('❌ Failed persisting WhatsApp credentials', err.message);
+            }
+        })();
+        credsSavePromise = write;
+        write.then(() => {
+            if (credsSavePromise === write) credsSavePromise = null;
+        });
     });
 
     // Keep the group-metadata cache warm so sends keep using it.
@@ -711,6 +823,15 @@ async function initialize() {
         if (sock) {
             teardownSocket(sock);
             sock = null;
+        }
+
+        // Let a credential write that's still in flight (the post-scan
+        // creds.update → 515 restart sequence) finish first — otherwise
+        // recoverAuthStateIfNeeded()/useMultiFileAuthState can read a torn
+        // creds.json and wipe a pairing that just succeeded.
+        if (credsSavePromise) {
+            try { await credsSavePromise; } catch (_) { /* logged by the writer */ }
+            credsSavePromise = null;
         }
 
         recoverAuthStateIfNeeded();
@@ -804,6 +925,7 @@ async function shutdown() {
     clearReconnectTimer();
     clearInitRetryTimer();
     clearDiscoveryTimer();
+    clearPairingWatchdog();
     if (watchdogTimer) {
         clearInterval(watchdogTimer);
         watchdogTimer = null;
@@ -885,6 +1007,9 @@ module.exports = {
     initialize,
     logoutAndReset,
     shutdown,
+    // Mutable timing table (read lazily) — exported so the offline test
+    // suite can shrink reconnect/watchdog waits without fake timers.
+    timings,
     discoverGroups,
     sendMessage,
     sendMedia,

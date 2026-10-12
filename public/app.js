@@ -117,6 +117,14 @@
                 pill.className = 'pill pill-success';
                 pill.textContent = 'Connected';
                 $('#connPhone').textContent = wa.phoneNumber ? `+${wa.phoneNumber}` : '';
+            } else if (wa.pairing) {
+                // WhatsApp already accepted the scan — the handshake is just
+                // finishing. Show that instead of a stale "Waiting for QR
+                // scan" while nothing visible happens.
+                dot.classList.remove('connected', 'error');
+                pill.className = 'pill pill-muted';
+                pill.textContent = 'Scan accepted — finishing link…';
+                $('#connPhone').textContent = '';
             } else if (wa.lastError) {
                 dot.classList.add('error');
                 pill.className = 'pill pill-danger';
@@ -128,10 +136,17 @@
                 $('#connPhone').textContent = '';
             }
 
+            // Button visibility follows the connection state:
+            //   • Not connected → no Log-out button (nothing to log out of);
+            //     instead offer "Clear cache & new QR" for stuck sessions.
+            //   • Connected → the Log-out / switch-number button appears.
+            $('#btnLogout').style.display = wa.ready ? '' : 'none';
+            $('#btnFreshQr').style.display = (wa.ready || wa.pairing) ? 'none' : '';
+
             wrap.classList.toggle('sending', s.broadcast.isSending);
             renderAdminSummaryStatus(s.broadcast);
 
-            $('#statWa').textContent = wa.ready ? 'Connected' : (wa.qrDataUrl ? 'Awaiting scan' : 'Not connected');
+            $('#statWa').textContent = wa.ready ? 'Connected' : (wa.pairing ? 'Finishing link…' : (wa.qrDataUrl ? 'Awaiting scan' : 'Not connected'));
 
             // Compact live-status chip in the mobile top bar
             const topbarWa = $('#topbarWa');
@@ -142,7 +157,7 @@
                 if (chipText) {
                     chipText.textContent = wa.ready
                         ? 'Live'
-                        : (wa.lastError ? 'Error' : (wa.qrDataUrl ? 'Scan QR' : 'Starting…'));
+                        : (wa.pairing ? 'Linking…' : (wa.lastError ? 'Error' : (wa.qrDataUrl ? 'Scan QR' : 'Starting…')));
                 }
             }
             $('#statLastRun').textContent = s.broadcast.lastRun
@@ -157,6 +172,8 @@
                     <span class="qr-success-title">WhatsApp connected${wa.phoneNumber ? ` · +${wa.phoneNumber}` : ''}</span>
                     <span class="qr-success-sub">Session is saved — it reconnects on its own, no re-scan needed</span>
                 </div>`;
+            } else if (wa.pairing) {
+                qrBox.innerHTML = `<span style="color:#9FB2D8; font-size:13.5px; position:relative; z-index:1;">🔗 Scan accepted — finishing the device link…<br><span style="color:var(--muted); font-size:12.5px;">This usually takes a few seconds, no need to scan again</span></span>`;
             } else if (wa.qrDataUrl) {
                 qrBox.innerHTML = `<img src="${wa.qrDataUrl}" alt="Scan this QR code with WhatsApp" />`;
             } else {
@@ -238,6 +255,15 @@
     $('#btnLogout').addEventListener('click', async () => {
         if (!confirm('This logs out the connected WhatsApp number and clears the saved session. Continue?')) return;
         try { await api('/api/wa/logout', { method: 'POST' }); toast('Logged out — scan a new QR'); }
+        catch (err) { toast(err.message, true); }
+    });
+
+    // Not-connected escape hatch: wipes the cached session (and its
+    // crash-repair snapshot) so a clean, scannable QR is generated again,
+    // while keeping the saved group selections.
+    $('#btnFreshQr').addEventListener('click', async () => {
+        if (!confirm('Clear the cached WhatsApp session and generate a fresh QR code? Your saved group selections are kept.')) return;
+        try { await api('/api/wa/fresh-qr', { method: 'POST' }); toast('Cache cleared — a fresh QR is coming up'); }
         catch (err) { toast(err.message, true); }
     });
 
