@@ -22,6 +22,22 @@
 //     no error, no retry, no new groups: the "stuck" symptom. Fixed with an
 //     AbortController timeout on every call, plus a watchdog that restarts
 //     the loop if it ever stops making progress.
+//
+// Resilience treatment (mirrors server/whatsapp.js):
+//  - Sends retry transient failures (network/timeout, 5xx, and 429 honouring
+//    Telegram's explicit retry_after) with a small bounded backoff, so a
+//    routine blip no longer fails a broadcast target. Permanent errors (bad
+//    chat id, bot kicked from that group, parse problems) surface at once.
+//  - A 401 from Telegram means the token itself was revoked/deleted — the
+//    same meaning as WhatsApp's 401 loggedOut. Retrying can't fix it, so
+//    polling STOPS cleanly with a dashboard-visible reason and the saved
+//    groups are kept, so re-connecting the bot re-attach everything.
+//  - A saved token that fails to connect at boot (server rebooted before
+//    the network was up) is retried with exponential backoff instead of
+//    giving up until someone clicks Connect again.
+//  - getUpdates 409 (another getUpdates in flight for the same token — a
+//    second instance or a straggler connection) backs off longer, like
+//    WhatsApp's "conflict" close handling.
 
 const fs = require('fs');
 const { EventEmitter } = require('events');
@@ -32,6 +48,20 @@ const API_BASE = 'https://api.telegram.org/bot';
 const LONG_POLL_TIMEOUT_SEC = 25;
 const WATCHDOG_INTERVAL_MS = 30000;
 const STALL_THRESHOLD_MS = 90000; // no poll cycle completing in 90s => assume wedged
+
+// Backoff/retry timings — grouped in one object and exported (read-only
+// usage) so the offline tests can shrink them without changing behaviour.
+const timings = {
+    pollBaseDelayMs: 2000,     // first retry after a failed poll cycle
+    pollMaxDelayMs: 60000,     // cap for the poll-loop backoff
+    conflictDelayMs: 20000,    // 409 Conflict — wait out the other getUpdates
+    initBaseDelayMs: 5000,     // first retry for a saved token that failed at boot
+    initMaxDelayMs: 60000,     // cap for the boot-retry backoff
+    sendRetryBaseMs: 2000,     // first send-retry delay (×attempt)
+    sendRetryMaxWaitMs: 5000,  // cap for a single honour-retry_after wait
+    sendRetryBudgetMs: 12000,  // total extra wait a send may spend retrying
+    sendMaxAttempts: 3         // total send attempts (1 + 2 retries)
+};
 
 let state = {
     connected: false,
@@ -47,7 +77,9 @@ let currentToken = null;
 let pollAbort = false;
 let pollLoopPromise = null;
 let updateOffset = 0;
-let pollRetryDelay = 2000; // grows on repeated failure, resets on success
+let pollRetryDelay = timings.pollBaseDelayMs; // grows on repeated failure, resets on success
+let initRetryTimer = null; // pending boot-reconnect attempt for a saved token
+let initRetryDelay = null;  // null = "use timings.initBaseDelayMs next time"
 let lastPollAtMs = 0; // epoch ms, updated every completed poll cycle (success or handled error)
 let watchdogTimer = null;
 
@@ -79,12 +111,47 @@ function apiUrl(method) {
     return `${API_BASE}${currentToken}/${method}`;
 }
 
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ---------- Error classification ----------
+// Attaches the Telegram error_code / retry_after to the thrown Error so
+// callers can decide between "retry" and "give up" — mirroring how
+// whatsapp.js reads DisconnectReason status codes off close errors.
+class TelegramApiError extends Error {
+    constructor(message, code, retryAfterSec) {
+        super(message);
+        this.name = 'TelegramApiError';
+        this.code = code != null ? code : null;          // Telegram error_code (null = network/timeout/non-JSON)
+        this.retryAfterSec = retryAfterSec != null ? retryAfterSec : null; // set on 429
+    }
+}
+
+function isTransientError(err) {
+    if (!err) return false;
+    // Network failure, abort/timeout, non-JSON response — unknown to Telegram,
+    // almost certainly transient.
+    if (err.code == null) return true;
+    if (err.code === 429) return true; // rate limit — retryable, honour retry_after
+    if (err.code >= 500) return true;  // Telegram-side server errors
+    return false;
+}
+
+// 401 = the token itself is invalid/revoked/deleted. Nothing we retry can
+// fix that; it needs a human to paste a new token. (403 in getUpdates means
+// the bot was blocked by a user in some chat — the API keeps working, so
+// that is NOT fatal.)
+function isFatalTokenError(err) {
+    return !!(err && err.code === 401);
+}
+
 // timeoutSec controls how long we allow the request to hang before we abort
 // it ourselves. For getUpdates this must be comfortably above the long-poll
 // `timeout` param we send Telegram (25s), otherwise we'd abort our own
 // legitimate long poll.
 async function callApi(method, body, isForm = false, timeoutSec = 15) {
-    if (!currentToken) throw new Error('Telegram bot token not set');
+    if (!currentToken) throw new TelegramApiError('Telegram bot token not set');
     const controller = new AbortController();
     const abortMs = (timeoutSec * 1000) + 10000;
     const timer = setTimeout(() => controller.abort(), abortMs);
@@ -98,9 +165,10 @@ async function callApi(method, body, isForm = false, timeoutSec = 15) {
         });
     } catch (err) {
         if (err.name === 'AbortError') {
-            throw new Error(`Telegram API request to ${method} timed out after ${Math.round(abortMs / 1000)}s`);
+            throw new TelegramApiError(`Telegram API request to ${method} timed out after ${Math.round(abortMs / 1000)}s`);
         }
-        throw err;
+        // DNS blip, connection reset, proxy failure… — code stays null → transient
+        throw new TelegramApiError(err.message);
     } finally {
         clearTimeout(timer);
     }
@@ -108,10 +176,17 @@ async function callApi(method, body, isForm = false, timeoutSec = 15) {
     try {
         data = await res.json();
     } catch (_) {
-        throw new Error(`Telegram API returned non-JSON response (HTTP ${res.status})`);
+        throw new TelegramApiError(`Telegram API returned non-JSON response (HTTP ${res.status})`);
     }
     if (!data.ok) {
-        throw new Error(data.description || `Telegram API error (HTTP ${res.status})`);
+        const retryAfterSec = data.parameters && typeof data.parameters.retry_after === 'number'
+            ? data.parameters.retry_after
+            : null;
+        throw new TelegramApiError(
+            data.description || `Telegram API error (HTTP ${res.status})`,
+            data.error_code != null ? data.error_code : res.status,
+            retryAfterSec
+        );
     }
     return data.result;
 }
@@ -213,20 +288,50 @@ async function fetchAndProcessUpdates(timeoutSec) {
 }
 
 async function pollLoop() {
-    pollRetryDelay = 2000;
+    pollRetryDelay = timings.pollBaseDelayMs;
     while (!pollAbort) {
         try {
             await fetchAndProcessUpdates(LONG_POLL_TIMEOUT_SEC);
-            pollRetryDelay = 2000; // reset backoff after a clean cycle
+            pollRetryDelay = timings.pollBaseDelayMs; // reset backoff after a clean cycle
         } catch (err) {
             if (pollAbort) break;
             lastPollAtMs = Date.now(); // loop is alive, just erroring — don't let the watchdog treat this as wedged
             state.lastPollAt = new Date(lastPollAtMs).toISOString();
             state.lastError = err.message;
             emitState();
-            logger.error(`⚠️ Telegram polling error: ${err.message} — retrying in ${Math.round(pollRetryDelay / 1000)}s`);
-            await new Promise(resolve => setTimeout(resolve, pollRetryDelay));
-            pollRetryDelay = Math.min(60000, pollRetryDelay * 1.7);
+
+            // 401 = token revoked/deleted — same meaning as WhatsApp's 401
+            // loggedOut. Retrying just hammers Telegram with a dead token
+            // forever. Stop cleanly, surface WHY on the dashboard, and keep
+            // the saved groups so pasting a fresh token re-attaches them.
+            if (isFatalTokenError(err)) {
+                logger.error('🛑 Telegram rejected the bot token (401 Unauthorized) — the token is invalid or was revoked. Polling stopped; reconnect the bot from the dashboard. Saved group selections are kept.');
+                state.connected = false;
+                state.initializing = false;
+                state.lastError = 'Telegram bot token is invalid or was revoked — reconnect the bot from the dashboard (saved groups are kept)';
+                emitState();
+                stopPolling(); // also stops the watchdog
+                break;
+            }
+
+            let delay = pollRetryDelay;
+            if (err.code === 429 && err.retryAfterSec) {
+                // Telegram told us exactly how long to back off — honour it
+                // (but never let a bogus value stall the loop for hours).
+                delay = Math.max(delay, Math.min(err.retryAfterSec, 300) * 1000);
+                logger.warn(`⏳ Telegram rate limit — backing off ${Math.round(delay / 1000)}s as requested`);
+            } else if (err.code === 409) {
+                // Another getUpdates is already in flight for this token
+                // (second instance, or a straggler request that hasn't fully
+                // died). Like WhatsApp's conflict close: credentials are
+                // fine, just wait longer before retrying.
+                delay = Math.max(delay, timings.conflictDelayMs);
+                logger.warn('⚔️ Telegram getUpdates conflict (another poller is using this token?) — backing off longer, credentials kept');
+            } else {
+                logger.error(`⚠️ Telegram polling error: ${err.message} — retrying in ${Math.round(delay / 1000)}s`);
+            }
+            await sleep(delay);
+            pollRetryDelay = Math.min(timings.pollMaxDelayMs, Math.round(pollRetryDelay * 1.7));
         }
     }
 }
@@ -271,10 +376,17 @@ function stopWatchdog() {
     }
 }
 
+// Process is shutting down (SIGTERM/SIGINT via index.js calling
+// disconnect/haltPolling) — used to cancel a pending boot-retry so it can't
+// resurrect a connection mid-shutdown.
+let shuttingDown = false;
+
 async function connect(token) {
     const trimmed = String(token || '').trim();
     if (!trimmed) throw new Error('Bot token is required');
 
+    clearInitRetry(); // a live connect supersedes any pending boot retry
+    shuttingDown = false; // reconnecting after a manual disconnect/shutdown
     state.initializing = true;
     state.lastError = null;
     emitState();
@@ -310,6 +422,8 @@ async function connect(token) {
 }
 
 async function disconnect() {
+    shuttingDown = true;
+    clearInitRetry();
     stopPolling();
     currentToken = null;
     store.saveConfig({ telegram: { botToken: '' } });
@@ -321,14 +435,61 @@ async function disconnect() {
 // Called once at process boot — if a token was already saved from a
 // previous session, reconnect automatically instead of requiring the
 // dashboard to re-enter it after every deploy/restart.
+//
+// If the very first getMe fails for a TRANSIENT reason (server rebooted
+// before DNS/NIC was up, brief network outage) this used to give up until
+// someone clicked Connect — the bot stayed silently dead. Now it retries
+// with the same exponential backoff shape as WhatsApp's boot reconnect
+// (initBaseDelayMs → initMaxDelayMs, reset on success). A 401 is NOT
+// retried — that needs a human pasting a fresh token.
 async function initFromSavedConfig() {
     const config = store.getConfig();
     const token = config.telegram && config.telegram.botToken;
     if (!token) return;
     try {
         await connect(token);
+        initRetryDelay = null; // reset backoff after success
     } catch (err) {
         logger.error('❌ Saved Telegram bot token failed to reconnect', err.message);
+        if (isFatalTokenError(err)) {
+            state.lastError = 'Saved Telegram bot token is invalid or was revoked — paste a fresh token from the dashboard';
+            emitState();
+            return;
+        }
+        scheduleInitRetry(token);
+    }
+}
+
+function scheduleInitRetry(token) {
+    if (initRetryTimer || shuttingDown) return;
+    // Read timings lazily (not at module load) so the delay always reflects
+    // the current base value.
+    const delay = initRetryDelay != null ? initRetryDelay : timings.initBaseDelayMs;
+    logger.info(`↻ Retrying saved Telegram token in ${Math.round(delay / 1000)}s (transient failure)`);
+    initRetryTimer = setTimeout(async () => {
+        initRetryTimer = null;
+        try {
+            await connect(token);
+            logger.info('✅ Telegram bot reconnected from saved token after retry');
+            initRetryDelay = null;
+        } catch (err) {
+            logger.error('❌ Telegram saved-token retry failed', err.message);
+            if (isFatalTokenError(err)) {
+                state.lastError = 'Saved Telegram bot token is invalid or was revoked — paste a fresh token from the dashboard';
+                emitState();
+                return;
+            }
+            initRetryDelay = Math.min(timings.initMaxDelayMs, Math.round(delay * 1.7));
+            scheduleInitRetry(token);
+        }
+    }, delay);
+    if (initRetryTimer && typeof initRetryTimer.unref === 'function') initRetryTimer.unref();
+}
+
+function clearInitRetry() {
+    if (initRetryTimer) {
+        clearTimeout(initRetryTimer);
+        initRetryTimer = null;
     }
 }
 
@@ -357,13 +518,46 @@ async function forceSync() {
     }
 }
 
+// ---------- Bounded send retry ----------
+// Mirrors the WhatsApp side, where Baileys' own resend machinery plus the
+// broadcast layer's retries absorb a routine few-second blip. Telegram sends
+// were one-shot: a single network hiccup or 429 failed that group for the
+// whole run. Retries ONLY transient failures (network/timeout, 5xx, 429
+// honouring retry_after); deterministic errors (bad chat id, bot kicked,
+// parse problems) surface immediately. The total extra wait is capped by
+// sendRetryBudgetMs so this can never outlive the caller's SEND_TIMEOUT_MS
+// (25s in broadcast.js) and turn a slow send into a hung broadcast.
+async function sendWithRetry(fn, label) {
+    let attempt = 1;
+    let budgetLeftMs = timings.sendRetryBudgetMs;
+    while (true) {
+        try {
+            return await fn();
+        } catch (err) {
+            if (!isTransientError(err) || attempt >= timings.sendMaxAttempts || budgetLeftMs <= 0) {
+                throw err;
+            }
+            let delay = Math.min(timings.sendRetryBaseMs * attempt, budgetLeftMs);
+            if (err.code === 429 && err.retryAfterSec) {
+                delay = Math.min(Math.max(err.retryAfterSec * 1000, delay), budgetLeftMs, timings.sendRetryMaxWaitMs);
+            }
+            budgetLeftMs -= delay;
+            logger.warn(`⏳ ${label} hit a transient error (attempt ${attempt}/${timings.sendMaxAttempts}: ${err.message}) — retrying in ${Math.round(delay / 1000)}s`);
+            await sleep(delay);
+            attempt++;
+        }
+    }
+}
+
 async function sendMessage(chatId, text) {
     if (!state.connected) throw new Error('Telegram bot is not connected');
     try {
-        return await callApi('sendMessage', { chat_id: chatId, text, parse_mode: 'Markdown' });
+        return await sendWithRetry(() => callApi('sendMessage', { chat_id: chatId, text, parse_mode: 'Markdown' }), 'Telegram send');
     } catch (err) {
         // A formatting glitch (unescaped * or _ in a job title, etc.) should
-        // not block delivery — fall back to plain text once.
+        // not block delivery — fall back to plain text once. (Not retried by
+        // sendWithRetry: it's a deterministic 400, retrying wastes the
+        // budget — this fallback IS the retry, with a different payload.)
         if (/parse entities|can't parse/i.test(err.message)) {
             return await callApi('sendMessage', { chat_id: chatId, text });
         }
@@ -374,22 +568,21 @@ async function sendMessage(chatId, text) {
 async function sendPhoto(chatId, filePath, caption) {
     if (!state.connected) throw new Error('Telegram bot is not connected');
     const buffer = fs.readFileSync(filePath);
-    const form = new FormData();
-    form.append('chat_id', String(chatId));
-    if (caption) {
-        form.append('caption', caption);
-        form.append('parse_mode', 'Markdown');
-    }
-    form.append('photo', new Blob([buffer]), 'broadcast.jpg');
+    const buildForm = (withCaption) => {
+        const form = new FormData();
+        form.append('chat_id', String(chatId));
+        if (withCaption) {
+            form.append('caption', caption);
+            form.append('parse_mode', 'Markdown');
+        }
+        form.append('photo', new Blob([buffer]), 'broadcast.jpg');
+        return form;
+    };
     try {
-        return await callApi('sendPhoto', form, true, 30);
+        return await sendWithRetry(() => callApi('sendPhoto', buildForm(true), true, 30), 'Telegram photo send');
     } catch (err) {
         if (/parse entities|can't parse/i.test(err.message) && caption) {
-            const form2 = new FormData();
-            form2.append('chat_id', String(chatId));
-            form2.append('caption', caption);
-            form2.append('photo', new Blob([buffer]), 'broadcast.jpg');
-            return await callApi('sendPhoto', form2, true, 30);
+            return await callApi('sendPhoto', buildForm(false), true, 30);
         }
         throw err;
     }
@@ -416,5 +609,8 @@ module.exports = {
     getState,
     haltPolling: stopPolling,
     onStateChange: (cb) => listeners.on('state', cb),
-    offStateChange: (cb) => listeners.off('state', cb)
+    offStateChange: (cb) => listeners.off('state', cb),
+    // Read-only backoff knobs — exported so the offline tests can shrink
+    // them; production code must never mutate this object.
+    timings
 };
